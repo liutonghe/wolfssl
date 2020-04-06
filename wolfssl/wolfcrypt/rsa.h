@@ -1,6 +1,6 @@
 /* rsa.h
  *
- * Copyright (C) 2006-2019 wolfSSL Inc.
+ * Copyright (C) 2006-2020 wolfSSL Inc.
  *
  * This file is part of wolfSSL.
  *
@@ -278,9 +278,8 @@ WOLFSSL_API int  wc_RsaPublicKeyDecode(const byte* input, word32* inOutIdx,
                                                                RsaKey*, word32);
 WOLFSSL_API int  wc_RsaPublicKeyDecodeRaw(const byte* n, word32 nSz,
                                         const byte* e, word32 eSz, RsaKey* key);
-#ifdef WOLFSSL_KEY_GEN
-    WOLFSSL_API int wc_RsaKeyToDer(RsaKey*, byte* output, word32 inLen);
-#endif
+WOLFSSL_API int wc_RsaKeyToDer(RsaKey*, byte* output, word32 inLen);
+
 
 #ifdef WC_RSA_BLINDING
     WOLFSSL_API int wc_RsaSetRNG(RsaKey* key, WC_RNG* rng);

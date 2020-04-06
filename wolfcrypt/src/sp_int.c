@@ -1,6 +1,6 @@
 /* sp_int.c
  *
- * Copyright (C) 2006-2019 wolfSSL Inc.
+ * Copyright (C) 2006-2020 wolfSSL Inc.
  *
  * This file is part of wolfSSL.
  *
@@ -48,6 +48,8 @@ WOLFSSL_LOCAL int sp_ModExp_1536(sp_int* base, sp_int* exp, sp_int* mod,
 WOLFSSL_LOCAL int sp_ModExp_2048(sp_int* base, sp_int* exp, sp_int* mod,
     sp_int* res);
 WOLFSSL_LOCAL int sp_ModExp_3072(sp_int* base, sp_int* exp, sp_int* mod,
+    sp_int* res);
+WOLFSSL_LOCAL int sp_ModExp_4096(sp_int* base, sp_int* exp, sp_int* mod,
     sp_int* res);
 
 #endif
@@ -149,38 +151,44 @@ int sp_unsigned_bin_size(sp_int* a)
  * a     SP integer.
  * in    Array of bytes.
  * inSz  Number of data bytes in array.
- * returns MP_OKAY always.
+ * returns BAD_FUNC_ARG when the number is too big to fit in an SP and
+           MP_OKAY otherwise.
  */
-int sp_read_unsigned_bin(sp_int* a, const byte* in, word32 inSz)
+int sp_read_unsigned_bin(sp_int* a, const byte* in, int inSz)
 {
-    int i, j = 0, s = 0;
+    int err = MP_OKAY;
+    int i, j = 0, k;
 
-    a->dp[0] = 0;
-    for (i = inSz-1; i >= 0; i--) {
-        a->dp[j] |= ((sp_int_digit)in[i]) << s;
-        if (s == DIGIT_BIT - 8) {
-            a->dp[++j] = 0;
-            s = 0;
-        }
-        else if (s > DIGIT_BIT - 8) {
-            s = DIGIT_BIT - s;
-            if (j + 1 >= a->size)
-                break;
-            a->dp[++j] = in[i] >> s;
-            s = 8 - s;
-        }
-        else
-            s += 8;
+    if (inSz > SP_INT_DIGITS * (int)sizeof(a->dp[0])) {
+        err = MP_VAL;
     }
 
-    a->used = j + 1;
-    if (a->dp[j] == 0)
-        a->used--;
+    if (err == MP_OKAY) {
+        for (i = inSz-1; i >= (SP_WORD_SIZE/8); i -= (SP_WORD_SIZE/8), j++) {
+            a->dp[j]  = (((sp_int_digit)in[i-0]) << (0*8))
+                     |  (((sp_int_digit)in[i-1]) << (1*8))
+                     |  (((sp_int_digit)in[i-2]) << (2*8))
+                     |  (((sp_int_digit)in[i-3]) << (3*8));
+    #if SP_WORD_SIZE == 64
+            a->dp[j] |= (((sp_int_digit)in[i-4]) << (4*8))
+                     |  (((sp_int_digit)in[i-5]) << (5*8))
+                     |  (((sp_int_digit)in[i-6]) << (6*8))
+                     |  (((sp_int_digit)in[i-7]) << (7*8));
+    #endif
+        }
+        if (i >= 0) {
+            a->dp[j] = 0;
+            for (k = 0; k <= i; k++) {
+                a->dp[j] <<= 8;
+                a->dp[j] |= in[k];
+            }
+        }
+        a->used = j + 1;
+    }
 
-    for (j++; j < a->size; j++)
-        a->dp[j] = 0;
+    sp_clamp(a);
 
-    return MP_OKAY;
+    return err;
 }
 
 #ifdef HAVE_ECC
@@ -200,8 +208,13 @@ int sp_read_radix(sp_int* a, const char* in, int radix)
     int  i, j = 0, k = 0;
     char ch;
 
-    if ((radix != 16) || (*in == '-'))
+    if ((radix != 16) || (*in == '-')) {
         err = BAD_FUNC_ARG;
+    }
+
+    while (*in == '0') {
+        in++;
+    }
 
     if (err == MP_OKAY) {
         a->dp[0] = 0;
@@ -220,9 +233,13 @@ int sp_read_radix(sp_int* a, const char* in, int radix)
 
             a->dp[k] |= ((sp_int_digit)ch) << j;
             j += 4;
-            if (j == DIGIT_BIT && k < SP_INT_DIGITS)
+            if (k >= SP_INT_DIGITS - 1) {
+                err = MP_VAL;
+                break;
+            }
+            if (j == DIGIT_BIT)
                 a->dp[++k] = 0;
-            j &= DIGIT_BIT - 1;
+            j &= SP_WORD_SIZE - 1;
         }
     }
 
@@ -233,6 +250,8 @@ int sp_read_radix(sp_int* a, const char* in, int radix)
 
         for (k++; k < a->size; k++)
             a->dp[k] = 0;
+
+        sp_clamp(a);
     }
 
     return err;
@@ -287,10 +306,19 @@ int sp_count_bits(sp_int* a)
         r = 0;
     else {
         d = a->dp[r];
-        r *= DIGIT_BIT;
-        while (d != 0) {
-            r++;
-            d >>= 1;
+        r *= SP_WORD_SIZE;
+        if (d >= (1L << (SP_WORD_SIZE / 2))) {
+            r += SP_WORD_SIZE;
+            while ((d & (1L << (SP_WORD_SIZE - 1))) == 0) {
+                r--;
+                d <<= 1;
+            }
+        }
+        else {
+            while (d != 0) {
+                r++;
+                d >>= 1;
+            }
         }
     }
 
@@ -331,13 +359,17 @@ int sp_leading_bit(sp_int* a)
 int sp_to_unsigned_bin(sp_int* a, byte* out)
 {
     int i, j, b;
+    sp_int_digit d;
 
     j = sp_unsigned_bin_size(a) - 1;
     for (i=0; j>=0; i++) {
-        for (b = 0; b < SP_WORD_SIZE; b += 8) {
-            out[j--] = a->dp[i] >> b;
-            if (j < 0)
+        d = a->dp[i];
+        for (b = 0; b < SP_WORD_SIZE / 8; b++) {
+            out[j] = d;
+            if (--j < 0) {
                 break;
+            }
+            d >>= 8;
         }
     }
 
@@ -402,13 +434,13 @@ int sp_copy(sp_int* a, sp_int* r)
 /* creates "a" then copies b into it */
 int sp_init_copy (sp_int * a, sp_int * b)
 {
-  int     res;
-  if ((res = sp_init(a)) == MP_OKAY) {
-      if((res = sp_copy (b, a)) != MP_OKAY) {
+  int err;
+  if ((err = sp_init(a)) == MP_OKAY) {
+      if((err = sp_copy (b, a)) != MP_OKAY) {
           sp_clear(a);
       }
   }
-  return res;
+  return err;
 }
 #endif
 
@@ -420,12 +452,17 @@ int sp_init_copy (sp_int * a, sp_int * b)
  */
 int sp_set(sp_int* a, sp_int_digit d)
 {
-    a->dp[0] = d;
-    a->used = 1;
+    if (d == 0) {
+      a->dp[0] = d;
+      a->used = 0;
+    }
+    else {
+      a->dp[0] = d;
+      a->used = 1;
+    }
     return MP_OKAY;
 }
 
-#if !defined(WOLFSSL_RSA_VERIFY_ONLY) || (!defined(NO_DH) || defined(HAVE_ECC))
 /* Recalculate the number of digits used.
  *
  * a  SP integer.
@@ -439,6 +476,7 @@ void sp_clamp(sp_int* a)
     a->used = i + 1;
 }
 
+#if !defined(WOLFSSL_RSA_VERIFY_ONLY) || (!defined(NO_DH) || defined(HAVE_ECC))
 /* Grow big number to be able to hold l digits.
  * This function does nothing as the number of digits is fixed.
  *
@@ -467,18 +505,23 @@ int sp_grow(sp_int* a, int l)
 int sp_sub_d(sp_int* a, sp_int_digit d, sp_int* r)
 {
     int i = 0;
+    sp_int_digit t;
 
     r->used = a->used;
-    r->dp[0] = a->dp[0] - d;
-    if (r->dp[0] > a->dp[0]) {
+    t = a->dp[0] - d;
+    if (t > a->dp[0]) {
         for (++i; i < a->used; i++) {
             r->dp[i] = a->dp[i] - 1;
             if (r->dp[i] != (sp_int_digit)-1)
                break;
         }
     }
-    for (++i; i < a->used; i++)
-        r->dp[i] = a->dp[i];
+    r->dp[0] = t;
+    if (r != a) {
+        for (++i; i < a->used; i++)
+            r->dp[i] = a->dp[i];
+    }
+    sp_clamp(r);
 
     return MP_OKAY;
 }
@@ -569,7 +612,7 @@ int sp_sub(sp_int* a, sp_int* b, sp_int* r)
     }
     for (; i < a->used; i++) {
         r->dp[i] = a->dp[i] - c;
-        c = (a->dp[i] == 0) && (r->dp[i] == (sp_int_digit)-1);
+        c &= (r->dp[i] == (sp_int_digit)-1);
     }
     r->used = i;
     sp_clamp(r);
@@ -635,9 +678,13 @@ static void _sp_mul_d(sp_int* a, sp_int_digit n, sp_int* r, int o)
 static int sp_div(sp_int* a, sp_int* d, sp_int* r, sp_int* rem)
 {
     int err = MP_OKAY;
+    int ret;
+    int done = 0;
     int i;
     int s;
+#ifndef WOLFSSL_SP_DIV_32
     sp_int_word w = 0;
+#endif
     sp_int_digit dt;
     sp_int_digit t;
 #ifdef WOLFSSL_SMALL_STACK
@@ -655,20 +702,52 @@ static int sp_div(sp_int* a, sp_int* d, sp_int* r, sp_int* rem)
     if (sp_iszero(d))
         err = MP_VAL;
 
+    ret = sp_cmp(a, d);
+    if (ret == MP_LT) {
+        if (rem != NULL) {
+            sp_copy(a, rem);
+        }
+        if (r != NULL) {
+            sp_set(r, 0);
+        }
+        done = 1;
+    }
+    else if (ret == MP_EQ) {
+        if (rem != NULL) {
+            sp_set(rem, 0);
+        }
+        if (r != NULL) {
+            sp_set(r, 1);
+        }
+        done = 1;
+    }
+    else if (sp_count_bits(a) == sp_count_bits(d)) {
+        /* a is greater than d but same bit length */
+        if (rem != NULL) {
+            sp_sub(a, d, rem);
+        }
+        if (r != NULL) {
+            sp_set(r, 1);
+        }
+        done = 1;
+    }
+
 #ifdef WOLFSSL_SMALL_STACK
-    if (err == MP_OKAY) {
+    if (!done && err == MP_OKAY) {
         sa = (sp_int*)XMALLOC(sizeof(sp_int) * 4, NULL, DYNAMIC_TYPE_BIGINT);
-        if (sa == NULL)
+        if (sa == NULL) {
             err = MP_MEM;
-        else {
-            sd    = &sa[1];
-            tr    = &sa[2];
-            trial = &sa[3];
         }
     }
 #endif
 
-    if (err == MP_OKAY) {
+    if (!done && err == MP_OKAY) {
+#ifdef WOLFSSL_SMALL_STACK
+        sd    = &sa[1];
+        tr    = &sa[2];
+        trial = &sa[3];
+#endif
+
         sp_init(sa);
         sp_init(sd);
         sp_init(tr);
@@ -684,28 +763,73 @@ static int sp_div(sp_int* a, sp_int* d, sp_int* r, sp_int* rem)
             d = sd;
         }
 
-        tr->used = sa->used - d->used;
-        if ((sa->dp[sa->used-1] >> (SP_WORD_SIZE - 1)) == 1) {
-            _sp_mul_d(d, 1, trial, sa->used - d->used);
-            if (sp_cmp(sa, trial) != MP_LT) {
-                tr->used++;
-                sp_sub(sa, trial, sa);
-                tr->dp[sa->used - d->used] = 1;
+        tr->used = sa->used - d->used + 1;
+        sp_clear(tr);
+        tr->used = sa->used - d->used + 1;
+        dt = d->dp[d->used-1];
+#ifndef WOLFSSL_SP_DIV_32
+        for (i = sa->used - 1; i >= d->used; ) {
+            if (sa->dp[i] > dt) {
+                t = (sp_int_digit)-1;
             }
+            else {
+                w = ((sp_int_word)sa->dp[i] << SP_WORD_SIZE) | sa->dp[i-1];
+                w /= dt;
+                if (w > (sp_int_digit)-1) {
+                    t = (sp_int_digit)-1;
+                }
+                else {
+                    t = (sp_int_digit)w;
+                }
+            }
+
+            if (t > 0) {
+                _sp_mul_d(d, t, trial, i - d->used);
+                while (sp_cmp(trial, sa) == MP_GT) {
+                    t--;
+                    _sp_mul_d(d, t, trial, i - d->used);
+                }
+                sp_sub(sa, trial, sa);
+                tr->dp[i - d->used] += t;
+                if (tr->dp[i - d->used] < t)
+                    tr->dp[i + 1 - d->used]++;
+            }
+            i = sa->used - 1;
+        }
+#else
+     {
+        sp_int_digit div = (dt >> (SP_WORD_SIZE / 2)) + 1;
+        for (i = sa->used - 1; i >= d->used; ) {
+            t = sa->dp[i] / div;
+            if ((t > 0) && (t << (SP_WORD_SIZE / 2) == 0))
+                t = (sp_int_digit)-1;
+            t <<= SP_WORD_SIZE / 2;
+            if (t == 0) {
+               t = sa->dp[i] << (SP_WORD_SIZE / 2);
+               t += sa->dp[i-1] >> (SP_WORD_SIZE / 2);
+               t /= div;
+            }
+
+            if (t > 0) {
+                _sp_mul_d(d, t, trial, i - d->used);
+                while (sp_cmp(trial, sa) == MP_GT) {
+                    t--;
+                    _sp_mul_d(d, t, trial, i - d->used);
+                }
+                sp_sub(sa, trial, sa);
+                tr->dp[i - d->used] += t;
+                if (tr->dp[i - d->used] < t)
+                    tr->dp[i + 1 - d->used]++;
+            }
+            i = sa->used - 1;
         }
 
-        dt = d->dp[d->used-1];
-        for (i = sa->used - 1; i >= d->used; i--) {
-            w = ((sp_int_word)sa->dp[i] << SP_WORD_SIZE) | sa->dp[i-1];
-            t = (sp_int_digit)(w / dt);
-            _sp_mul_d(d, t, trial, i - d->used);
-            while (sp_cmp(trial, sa) == MP_GT) {
-                t--;
-                _sp_mul_d(d, t, trial, i - d->used);
-            }
-            sp_sub(sa, trial, sa);
-            tr->dp[i - d->used] = t;
+        while (sp_cmp(sa, d) != MP_LT) {
+            sp_sub(sa, d, sa);
+            sp_add_d(tr, 1, tr);
         }
+    }
+#endif
 
         sp_clamp(tr);
 
@@ -764,6 +888,9 @@ int sp_add_d(sp_int* a, sp_int_digit d, sp_int* r)
     int i = 0;
 
     r->used = a->used;
+    if (a->used == 0) {
+        r->used = 1;
+    }
     r->dp[0] = a->dp[0] + d;
     if (r->dp[i] < a->dp[i]) {
         for (; i < a->used; i++) {
@@ -800,6 +927,7 @@ int sp_lshd(sp_int* a, int s)
     XMEMMOVE(a->dp + s, a->dp, a->used * sizeof(sp_int_digit));
     a->used += s;
     XMEMSET(a->dp, 0, s * sizeof(sp_int_digit));
+    sp_clamp(a);
 
     return MP_OKAY;
 }
@@ -857,7 +985,7 @@ int sp_set_int(sp_int* a, unsigned long b)
     }
     else {
         a->used = 1;
-        a->dp[0] = b;
+        a->dp[0] = (sp_int_digit)b;
     }
 
     return MP_OKAY;
@@ -905,7 +1033,7 @@ int sp_tohex(sp_int* a, char* str)
 }
 #endif /* WC_MP_TO_RADIX */
 
-#if defined(WOLFSSL_KEY_GEN) || !defined(NO_DH)
+#if defined(WOLFSSL_KEY_GEN) || !defined(NO_DH) && !defined(WC_NO_RNG)
 /* Set a bit of a: a |= 1 << i
  * The field 'used' is updated in a.
  *
@@ -913,14 +1041,19 @@ int sp_tohex(sp_int* a, char* str)
  * i  Index of bit to set.
  * returns MP_OKAY always.
  */
-static int sp_set_bit(sp_int* a, int i)
+int sp_set_bit(sp_int* a, int i)
 {
-    if (i / SP_WORD_SIZE < SP_INT_DIGITS) {
+    int ret = MP_OKAY;
+
+    if ((a == NULL) ||  (i / SP_WORD_SIZE >= SP_INT_DIGITS)) {
+        ret = BAD_FUNC_ARG;
+    }
+    else {
         a->dp[i/SP_WORD_SIZE] |= (sp_int_digit)1 << (i % SP_WORD_SIZE);
         if (a->used <= i / SP_WORD_SIZE)
             a->used = (i / SP_WORD_SIZE) + 1;
     }
-    return MP_OKAY;
+    return ret;
 }
 
 /* Exponentiate 2 to the power of e: a = 2^e
@@ -1027,12 +1160,17 @@ int sp_mul(sp_int* a, sp_int* b, sp_int* r)
     sp_int tr[1];
 #endif
 
+    if (a->used + b->used > SP_INT_DIGITS)
+        err = MP_VAL;
+
 #ifdef WOLFSSL_SMALL_STACK
-    t = (sp_int*)XMALLOC(sizeof(sp_int) * 2, NULL, DYNAMIC_TYPE_BIGINT);
-    if (t == NULL)
-        err = MP_MEM;
-    else
-        tr = &t[1];
+    if (err == MP_OKAY) {
+        t = (sp_int*)XMALLOC(sizeof(sp_int) * 2, NULL, DYNAMIC_TYPE_BIGINT);
+        if (t == NULL)
+            err = MP_MEM;
+        else
+            tr = &t[1];
+    }
 #endif
 
     if (err == MP_OKAY) {
@@ -1059,14 +1197,18 @@ int sp_mul(sp_int* a, sp_int* b, sp_int* r)
  * a  SP integer to square.
  * m  SP integer modulus.
  * r  SP integer result.
- * returns MP_VAL when m is 0, MP_MEM when dynamic memory allocation fails and
- *         MP_OKAY otherwise.
+ * returns MP_VAL when m is 0, MP_MEM when dynamic memory allocation fails,
+ *         BAD_FUNC_ARG when a is to big and MP_OKAY otherwise.
  */
 static int sp_sqrmod(sp_int* a, sp_int* m, sp_int* r)
 {
-    int err;
+    int err = MP_OKAY;
 
-    err = sp_mul(a, a, r);
+    if (a->used * 2 > SP_INT_DIGITS)
+        err = MP_VAL;
+
+    if (err == MP_OKAY)
+        err = sp_mul(a, a, r);
     if (err == MP_OKAY)
         err = sp_mod(r, m, r);
 
@@ -1087,15 +1229,20 @@ int sp_mulmod(sp_int* a, sp_int* b, sp_int* m, sp_int* r)
 {
     int err = MP_OKAY;
 #ifdef WOLFSSL_SMALL_STACK
-    sp_int* t;
+    sp_int* t = NULL;
 #else
     sp_int t[1];
 #endif
 
+    if (a->used + b->used > SP_INT_DIGITS)
+        err = MP_VAL;
+
 #ifdef WOLFSSL_SMALL_STACK
-    t = (sp_int*)XMALLOC(sizeof(sp_int), NULL, DYNAMIC_TYPE_BIGINT);
-    if (t == NULL) {
-        err = MP_MEM;
+    if (err == MP_OKAY) {
+        t = (sp_int*)XMALLOC(sizeof(sp_int), NULL, DYNAMIC_TYPE_BIGINT);
+        if (t == NULL) {
+            err = MP_MEM;
+        }
     }
 #endif
     if (err == MP_OKAY) {
@@ -1248,9 +1395,10 @@ static int sp_div_2(sp_int* a, sp_int* r)
 }
 
 
-/* Divides a by 2 and stores in r: r = a >> 1
+/* Calculates the multiplicative inverse in the field.
  *
- * a  SP integer to divide.
+ * a  SP integer to invert.
+ * m  SP integer that is the modulus of the field.
  * r  SP integer result.
  * returns MP_VAL when a or m is 0, MP_MEM when dynamic memory allocation fails
  *         and MP_OKAY otherwise.
@@ -1261,44 +1409,65 @@ int sp_invmod(sp_int* a, sp_int* m, sp_int* r)
 #ifdef WOLFSSL_SMALL_STACK
     sp_int* u = NULL;
     sp_int* v;
-    sp_int* t;
     sp_int* b;
     sp_int* c;
 #else
-    sp_int u[1], v[1], t[1], b[1], c[1];
+    sp_int u[1], v[1], b[1], c[1];
 #endif
 
-    if (sp_iszero(a) || sp_iszero(m))
+#ifdef WOLFSSL_SMALL_STACK
+    u = (sp_int*)XMALLOC(sizeof(sp_int) * 4, NULL, DYNAMIC_TYPE_BIGINT);
+    if (u == NULL) {
+        err = MP_MEM;
+    }
+#endif
+
+    if (err == MP_OKAY) {
+#ifdef WOLFSSL_SMALL_STACK
+        v = &u[1];
+        b = &u[2];
+        c = &u[3];
+#endif
+        sp_init(v);
+
+        if (sp_cmp(a, m) != MP_LT) {
+            err = sp_mod(a, m, v);
+            a = v;
+        }
+    }
+
+    /* 0 != n*m + 1 (+ve m), r*a mod 0 is always 0 (never 1)  */
+    if ((err == MP_OKAY) && (sp_iszero(a) || sp_iszero(m))) {
         err = MP_VAL;
+    }
+    /* r*2*x != n*2*y + 1  */
+    if ((err == MP_OKAY) && sp_iseven(a) && sp_iseven(m)) {
+        err = MP_VAL;
+    }
+
+    /* 1*1 = 0*m + 1  */
+    if ((err == MP_OKAY) && sp_isone(a)) {
+        sp_set(r, 1);
+    }
+    else if (err != MP_OKAY) {
+    }
     else if (sp_iseven(m)) {
         /* a^-1 mod m = m + (1 - m*(m^-1 % a)) / a
          *            = m - (m*(m^-1 % a) - 1) / a
          */
         err = sp_invmod(m, a, r);
         if (err == MP_OKAY) {
-            sp_mul(r, m, r);
+            err = sp_mul(r, m, r);
+        }
+        if (err == MP_OKAY) {
             sp_sub_d(r, 1, r);
             sp_div(r, a, r, NULL);
             sp_sub(m, r, r);
         }
     }
     else {
-#ifdef WOLFSSL_SMALL_STACK
-        u = (sp_int*)XMALLOC(sizeof(sp_int) * 5, NULL, DYNAMIC_TYPE_BIGINT);
-        if (u == NULL)
-            err = MP_MEM;
-        else {
-            v = &u[1];
-            t = &u[2];
-            b = &u[3];
-            c = &u[4];
-        }
-#endif
-
         if (err == MP_OKAY) {
             sp_init(u);
-            sp_init(v);
-            sp_init(t);
             sp_init(b);
             sp_init(c);
 
@@ -1307,39 +1476,49 @@ int sp_invmod(sp_int* a, sp_int* m, sp_int* r)
             sp_zero(b);
             sp_set(c, 1);
 
-            while (!sp_isone(v)) {
+            while (!sp_isone(v) && !sp_iszero(u)) {
                 if (sp_iseven(u)) {
                     sp_div_2(u, u);
-                    if (sp_isodd(b))
+                    if (sp_isodd(b)) {
                         sp_add(b, m, b);
+                    }
                     sp_div_2(b, b);
                 }
                 else if (sp_iseven(v)) {
                     sp_div_2(v, v);
-                    if (sp_isodd(c))
+                    if (sp_isodd(c)) {
                         sp_add(c, m, c);
+                    }
                     sp_div_2(c, c);
                 }
                 else if (sp_cmp(u, v) != MP_LT) {
                     sp_sub(u, v, u);
-                    if (sp_cmp(b, c) == MP_LT)
+                    if (sp_cmp(b, c) == MP_LT) {
                         sp_add(b, m, b);
+                    }
                     sp_sub(b, c, b);
                 }
                 else {
                     sp_sub(v, u, v);
-                    if (sp_cmp(c, b) == MP_LT)
+                    if (sp_cmp(c, b) == MP_LT) {
                         sp_add(c, m, c);
+                    }
                     sp_sub(c, b, c);
                 }
             }
-            sp_copy(c, r);
+            if  (sp_iszero(u)) {
+                err = MP_VAL;
+            }
+            else {
+                sp_copy(c, r);
+            }
         }
     }
 
 #ifdef WOLFSSL_SMALL_STACK
-    if (u != NULL)
+    if (u != NULL) {
         XFREE(u, NULL, DYNAMIC_TYPE_BIGINT);
+    }
 #endif
 
     return err;
@@ -1405,24 +1584,70 @@ int sp_lcm(sp_int* a, sp_int* b, sp_int* r)
 int sp_exptmod(sp_int* b, sp_int* e, sp_int* m, sp_int* r)
 {
     int err = MP_OKAY;
-    int bits = sp_count_bits(m);
+    int done = 0;
+    int mBits = sp_count_bits(m);
+    int bBits = sp_count_bits(b);
+    int eBits = sp_count_bits(e);
 
+    if (sp_iszero(m)) {
+        err = MP_VAL;
+    }
+    else if (sp_isone(m)) {
+        sp_set(r, 0);
+        done = 1;
+    }
+    else if (sp_iszero(e)) {
+        sp_set(r, 1);
+        done = 1;
+    }
+    else if (sp_iszero(b)) {
+        sp_set(r, 0);
+        done = 1;
+    }
+    else if (m->used * 2 > SP_INT_DIGITS) {
+        err = BAD_FUNC_ARG;
+    }
+
+    if (!done && (err == MP_OKAY)) {
 #ifndef WOLFSSL_SP_NO_2048
-    if (bits == 1024)
-        sp_ModExp_1024(b, e, m, r);
-    else if (bits == 2048)
-        sp_ModExp_2048(b, e, m, r);
-    else
+        if ((mBits == 1024) && sp_isodd(m) && (bBits <= 1024) &&
+            (eBits <= 1024)) {
+            err = sp_ModExp_1024(b, e, m, r);
+            done = 1;
+        }
+        else if ((mBits == 2048) && sp_isodd(m) && (bBits <= 2048) &&
+                 (eBits <= 2048)) {
+            err = sp_ModExp_2048(b, e, m, r);
+            done = 1;
+        }
+        else
 #endif
 #ifndef WOLFSSL_SP_NO_3072
-    if (bits == 1536)
-        sp_ModExp_1536(b, e, m, r);
-    else if (bits == 3072)
-        sp_ModExp_3072(b, e, m, r);
-    else
+        if ((mBits == 1536) && sp_isodd(m) && (bBits <= 1536) &&
+            (eBits <= 1536)) {
+            err = sp_ModExp_1536(b, e, m, r);
+            done = 1;
+        }
+        else if ((mBits == 3072) && sp_isodd(m) && (bBits <= 3072) &&
+                 (eBits <= 3072)) {
+            err = sp_ModExp_3072(b, e, m, r);
+            done = 1;
+        }
+        else
 #endif
+#ifdef WOLFSSL_SP_NO_4096
+        if ((mBits == 4096) && sp_isodd(m) && (bBits <= 4096) &&
+            (eBits <= 4096)) {
+            err = sp_ModExp_4096(b, e, m, r);
+            done = 1;
+        }
+        else
+#endif
+        {
+        }
+    }
 #if defined(WOLFSSL_HAVE_SP_DH) && defined(WOLFSSL_KEY_GEN)
-    if (bits == 256) {
+    if (!done && (err == MP_OKAY)) {
         int i;
 
     #ifdef WOLFSSL_SMALL_STACK
@@ -1432,37 +1657,56 @@ int sp_exptmod(sp_int* b, sp_int* e, sp_int* m, sp_int* r)
     #endif
 
     #ifdef WOLFSSL_SMALL_STACK
-        t = (sp_int*)XMALLOC(sizeof(sp_int) * 2, NULL, DYNAMIC_TYPE_BIGINT);
-        if (t == NULL) {
-            err = MP_MEM;
-        }
-    #endif
-        if (err == MP_OKAY) {
-            sp_init(t);
-            sp_copy(b, t);
-
-            bits = sp_count_bits(e);
-        }
-        for (i = bits-2; err == MP_OKAY && i >= 0; i--) {
-            err = sp_sqrmod(t, m, t);
-            if (err == MP_OKAY &&
-                          (e->dp[i / SP_WORD_SIZE] >> (i % SP_WORD_SIZE)) & 1) {
-                err = sp_mulmod(t, b, m, t);
+        if (!done && (err == MP_OKAY)) {
+            t = (sp_int*)XMALLOC(sizeof(sp_int), NULL, DYNAMIC_TYPE_BIGINT);
+            if (t == NULL) {
+                err = MP_MEM;
             }
         }
-        if (err == MP_OKAY)
+    #endif
+        if (!done && (err == MP_OKAY)) {
+            sp_init(t);
+
+            if (sp_cmp(b, m) != MP_LT) {
+                err = sp_mod(b, m, t);
+                if (err == MP_OKAY && sp_iszero(t)) {
+                    sp_set(r, 0);
+                    done = 1;
+                }
+            }
+            else {
+                sp_copy(b, t);
+            }
+
+            if (!done && (err == MP_OKAY)) {
+                for (i = eBits-2; err == MP_OKAY && i >= 0; i--) {
+                     err = sp_sqrmod(t, m, t);
+                     if (err == MP_OKAY && (e->dp[i / SP_WORD_SIZE] >>
+                                                      (i % SP_WORD_SIZE)) & 1) {
+                         err = sp_mulmod(t, b, m, t);
+                     }
+                 }
+             }
+        }
+        if (!done && (err == MP_OKAY)) {
             sp_copy(t, r);
+        }
 
     #ifdef WOLFSSL_SMALL_STACK
-        if (t != NULL)
+        if (t != NULL) {
             XFREE(t, NULL, DYNAMIC_TYPE_BIGINT);
+        }
     #endif
     }
-    else
-#endif
+#else
+    if (!done && (err == MP_OKAY)) {
         err = MP_VAL;
+    }
+#endif
 
-    (void)bits;
+    (void)mBits;
+    (void)bBits;
+    (void)eBits;
 
     return err;
 }
@@ -1482,7 +1726,7 @@ static const int lnz[SP_LNZ_CNT] = {
 /* Count the number of least significant zero bits.
  *
  * a  Number to check
- * retuns the count of least significant zero bits.
+ * returns the count of least significant zero bits.
  */
 static int sp_cnt_lsb(sp_int* a)
 {
@@ -1684,7 +1928,7 @@ static const sp_int_digit primes[SP_PRIME_SIZE] = {
  * result  MP_YES when prime.
  *         MP_NO when not prime.
  * returns MP_VAL when t is out of range, MP_MEM when dynamic memory allocation
- *         failes and otherwiese MP_OKAY.
+ *         fails and otherwise MP_OKAY.
  */
 int sp_prime_is_prime(sp_int *a, int t, int* result)
 {
@@ -1768,7 +2012,7 @@ int sp_prime_is_prime(sp_int *a, int t, int* result)
  *         MP_NO when not prime.
  * rng     Random number generator.
  * returns MP_VAL when t is out of range, MP_MEM when dynamic memory allocation
- *         failes and otherwiese MP_OKAY.
+ *         fails and otherwise MP_OKAY.
  */
 int sp_prime_is_prime_ex(sp_int* a, int t, int* result, WC_RNG* rng)
 {
@@ -1882,7 +2126,7 @@ int sp_prime_is_prime_ex(sp_int* a, int t, int* result, WC_RNG* rng)
 }
 
 #ifndef NO_DH
-int sp_exch (sp_int* a, sp_int* b)
+int sp_exch(sp_int* a, sp_int* b)
 {
     int err = MP_OKAY;
 #ifndef WOLFSSL_SMALL_STACK
@@ -1912,6 +2156,21 @@ int sp_exch (sp_int* a, sp_int* b)
 #endif
 #endif
 
+#if defined(WOLFSSL_KEY_GEN) && !defined(NO_RSA)
+/* Multiply a by digit n and put result into r. r = a * n
+ *
+ * a  SP integer to be multiplied.
+ * n  Number to multiply by.
+ * r  SP integer result.
+ * returns MP_OKAY always.
+ */
+int sp_mul_d(sp_int* a, sp_int_digit n, sp_int* r)
+{
+    _sp_mul_d(a, n, r, 0);
+    return MP_OKAY;
+}
+#endif
+
 /* Returns the run time settings.
  *
  * returns the settings value.
@@ -1922,4 +2181,3 @@ word32 CheckRunTimeSettings(void)
 }
 
 #endif /* WOLFSSL_SP_MATH */
-

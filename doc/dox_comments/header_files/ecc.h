@@ -55,6 +55,67 @@ int wc_ecc_make_key(WC_RNG* rng, int keysize, ecc_key* key);
 /*!
     \ingroup ECC
 
+    \brief This function generates a new ecc_key and stores it in key.
+
+    \return 0 Returned on success.
+    \return ECC_BAD_ARG_E Returned if rng or key evaluate to NULL
+    \return BAD_FUNC_ARG Returned if the specified key size is not in the
+    correct range of supported keys
+    \return MEMORY_E Returned if there is an error allocating memory while
+    computing the ecc key
+    \return MP_INIT_E may be returned if there is an error while computing
+    the ecc key
+    \return MP_READ_E may be returned if there is an error while computing
+    the ecc key
+    \return MP_CMP_E may be returned if there is an error while computing the
+    ecc key
+    \return MP_INVMOD_E may be returned if there is an error while computing
+    the ecc key
+    \return MP_EXPTMOD_E may be returned if there is an error while computing
+    the ecc key
+    \return MP_MOD_E may be returned if there is an error while computing the
+    ecc key
+    \return MP_MUL_E may be returned if there is an error while computing the
+    ecc key
+    \return MP_ADD_E may be returned if there is an error while computing the
+    ecc key
+    \return MP_MULMOD_E may be returned if there is an error while computing
+    the ecc key
+    \return MP_TO_E may be returned if there is an error while computing the
+    ecc key
+    \return MP_MEM may be returned if there is an error while computing the
+    ecc key
+
+    \param key Pointer to store the created key.
+    \param keysize size of key to be created in bytes, set based on curveId
+    \param rng Rng to be used in key creation
+    \param curve_id Curve to use for key
+
+    _Example_
+    \code
+    ecc_key key;
+    int ret;
+    WC_WC_RNG rng;
+    wc_ecc_init(&key);
+    wc_InitRng(&rng);
+    int curveId = ECC_SECP521R1;
+    int keySize = wc_ecc_get_curve_size_from_id(curveId);
+    ret = wc_ecc_make_key_ex(&rng, keySize, &key, curveId);
+    if (ret != MP_OKAY) {
+        // error handling
+    }
+
+    \endcode
+
+    \sa wc_ecc_make_key
+    \sa wc_ecc_get_curve_size_from_id
+*/
+WOLFSSL_API
+int wc_ecc_make_key_ex(WC_RNG* rng, int keysize, ecc_key* key, int curve_id);
+
+/*!
+    \ingroup ECC
+
     \brief Perform sanity checks on ecc key validity.
 
     \return MP_OKAY Success, key is OK.
@@ -951,7 +1012,7 @@ int wc_ecc_export_x963_ex(ecc_key*, byte* out, word32* outLen, int compressed);
     byte buff[] = { initialize with ANSI X9.63 formatted key };
 
     ecc_key pubKey;
-    wc_ecc_init_key(&pubKey);
+    wc_ecc_init(&pubKey);
 
     ret = wc_ecc_import_x963(buff, sizeof(buff), &pubKey);
     if ( ret != 0) {
@@ -1020,7 +1081,7 @@ NOT_COMPILED_IN Returned if the HAVE_COMP_KEY was not enabled at compile
     byte priv[] = { initialize with the raw private key };
 
     ecc_key key;
-    wc_ecc_init_key(&key);
+    wc_ecc_init(&key);
     ret = wc_ecc_import_private_key(priv, sizeof(priv), pub, sizeof(pub),
     &key);
     if ( ret != 0) {

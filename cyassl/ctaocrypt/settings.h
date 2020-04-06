@@ -1,6 +1,6 @@
 /* settings.h
  *
- * Copyright (C) 2006-2019 wolfSSL Inc.
+ * Copyright (C) 2006-2020 wolfSSL Inc.
  *
  * This file is part of wolfSSL.
  *
@@ -704,12 +704,6 @@
     #else
         #define CYASSL_GENERAL_ALIGNMENT  0
     #endif
-#endif
-
-#ifdef HAVE_CRL
-    /* not widely supported yet */
-    #undef NO_SKID
-    #define NO_SKID
 #endif
 
 

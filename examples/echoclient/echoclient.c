@@ -1,6 +1,6 @@
 /* echoclient.c
  *
- * Copyright (C) 2006-2019 wolfSSL Inc.
+ * Copyright (C) 2006-2020 wolfSSL Inc.
  *
  * This file is part of wolfSSL.
  *
@@ -73,8 +73,10 @@ void echoclient_test(void* args)
     int doDTLS = 0;
     int doPSK = 0;
     int sendSz;
+#ifndef WOLFSSL_MDK_SHELL
     int argc    = 0;
     char** argv = 0;
+#endif
     word16 port = yasslPort;
     char buffer[CYASSL_MAX_ERROR_SZ];
 
@@ -83,7 +85,6 @@ void echoclient_test(void* args)
 #ifndef WOLFSSL_MDK_SHELL
     argc = ((func_args*)args)->argc;
     argv = ((func_args*)args)->argv;
-#endif
 
     if (argc >= 2) {
         fin  = fopen(argv[1], "r");
@@ -93,6 +94,7 @@ void echoclient_test(void* args)
         fout = fopen(argv[2], "w");
         outCreated = 1;
     }
+#endif
 
     if (!fin)  err_sys("can't open input file");
     if (!fout) err_sys("can't open output file");
@@ -105,7 +107,8 @@ void echoclient_test(void* args)
     doPSK = 1;
 #endif
 
-#if defined(NO_RSA) && !defined(HAVE_ECC) && !defined(HAVE_ED25519)
+#if defined(NO_RSA) && !defined(HAVE_ECC) && !defined(HAVE_ED25519) && \
+                                                            !defined(HAVE_ED448)
     doPSK = 1;
 #endif
 
@@ -134,6 +137,9 @@ void echoclient_test(void* args)
             err_sys("can't load ca file, Please run from wolfSSL home dir");
     #elif defined(HAVE_ED25519)
         if (SSL_CTX_load_verify_locations(ctx, caEdCertFile, 0) != WOLFSSL_SUCCESS)
+            err_sys("can't load ca file, Please run from wolfSSL home dir");
+    #elif defined(HAVE_ED448)
+        if (SSL_CTX_load_verify_locations(ctx, caEd448CertFile, 0) != WOLFSSL_SUCCESS)
             err_sys("can't load ca file, Please run from wolfSSL home dir");
     #endif
 #elif !defined(NO_CERTS)

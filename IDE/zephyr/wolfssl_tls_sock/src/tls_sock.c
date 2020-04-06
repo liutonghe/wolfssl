@@ -1,6 +1,6 @@
 /* tls_sock.c
  *
- * Copyright (C) 2006-2019 wolfSSL Inc.
+ * Copyright (C) 2006-2020 wolfSSL Inc.
  *
  * This file is part of wolfSSL.
  *
@@ -296,21 +296,20 @@ void join_thread(THREAD_TYPE thread)
 int wolfssl_server_accept_tcp(WOLFSSL* ssl, SOCKET_T* fd, SOCKET_T* acceptfd)
 {
     int ret = 0;
-    SOCKET_T      sockfd   = WOLFSSL_SOCKET_INVALID;
+    SOCKET_T      sockfd;
     SOCKET_T      clientfd = WOLFSSL_SOCKET_INVALID;
     SOCKADDR_IN_T client;
     socklen_t     client_len = sizeof(client);
     word16        port = 443;
     struct sockaddr_in bind_addr;
 
-    if (ret == 0) {
-        sockfd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-        bind_addr.sin_family = AF_INET;
-        bind_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-        bind_addr.sin_port = htons(port);
-        if (bind(sockfd, (struct sockaddr *)&bind_addr, sizeof(bind_addr)) != 0)
-            ret = -1;
-    }
+    sockfd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    bind_addr.sin_family = AF_INET;
+    bind_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    bind_addr.sin_port = htons(port);
+    if (bind(sockfd, (struct sockaddr *)&bind_addr, sizeof(bind_addr)) != 0)
+        ret = -1;
+
     if (ret == 0) {
         *fd = sockfd;
         printf("Server Listen\n");
@@ -377,7 +376,7 @@ void server_thread(void* arg1, void* arg2, void* arg3)
     }
     if (ret == 1)
         ret = 0;
-    /* Send HTTP repsonse */
+    /* Send HTTP response */
     if (ret == 0)
         ret = wolfssl_send(server_ssl, msgHTTPIndex);
 
@@ -507,6 +506,6 @@ int main()
 
     printf("Done\n");
 
-    return (ret == 0) ? 0 : 1;
+    return 0;
 }
 

@@ -1,6 +1,6 @@
 /* keys.c
  *
- * Copyright (C) 2006-2019 wolfSSL Inc.
+ * Copyright (C) 2006-2020 wolfSSL Inc.
  *
  * This file is part of wolfSSL.
  *
@@ -48,7 +48,7 @@ int SetCipherSpecs(WOLFSSL* ssl)
     if (ssl->options.side == WOLFSSL_CLIENT_END) {
         /* server side verified before SetCipherSpecs call */
         if (VerifyClientSuite(ssl) != 1) {
-            WOLFSSL_MSG("SetCipherSpecs() client has an unusuable suite");
+            WOLFSSL_MSG("SetCipherSpecs() client has an unusable suite");
             return UNSUPPORTED_SUITE;
         }
     }
@@ -241,7 +241,7 @@ int SetCipherSpecs(WOLFSSL* ssl)
 
     switch (ssl->options.cipherSuite) {
 
-#if defined(HAVE_ECC) || defined(HAVE_CURVE25519)
+#if defined(HAVE_ECC) || defined(HAVE_CURVE25519) || defined(HAVE_CURVE448)
 
 #ifdef BUILD_TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256
     case TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256 :
@@ -417,9 +417,10 @@ int SetCipherSpecs(WOLFSSL* ssl)
         break;
 #endif
 
-#endif /* HAVE_ECC || HAVE_CURVE25519 */
+#endif /* HAVE_ECC || HAVE_CURVE25519 || HAVE_CURVE448 */
 
-#if defined(HAVE_ECC) || (defined(HAVE_CURVE25519) && defined(HAVE_ED25519))
+#if defined(HAVE_ECC) || (defined(HAVE_CURVE25519) && defined(HAVE_ED25519)) \
+                      || (defined(HAVE_CURVE448) && defined(HAVE_ED448))
 
 #ifdef BUILD_TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256
     case TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256 :
@@ -630,7 +631,7 @@ int SetCipherSpecs(WOLFSSL* ssl)
     break;
 #endif
 
-#endif /* HAVE_ECC || (HAVE_CURVE25519 && HAVE_ED25519) */
+#endif /* HAVE_ECC || (CURVE25519 && ED25519) || (CURVE448 && ED448) */
 
 #if defined(HAVE_ECC)
 

@@ -1,6 +1,6 @@
 /* pwdbased.c
  *
- * Copyright (C) 2006-2019 wolfSSL Inc.
+ * Copyright (C) 2006-2020 wolfSSL Inc.
  *
  * This file is part of wolfSSL.
  *
@@ -484,7 +484,7 @@ int wc_PKCS12_PBKDF_ex(byte* output, const byte* passwd, int passLen,
             else {
                 if (outSz > (int)v) {
                     /* take off MSB */
-                    byte  tmp[129];
+                    byte  tmp[WC_MAX_BLOCK_SIZE + 1];
                     ret = mp_to_unsigned_bin(&res, tmp);
                     XMEMCPY(I + i, tmp + 1, v);
                 }
@@ -715,7 +715,7 @@ int wc_scrypt(byte* output, const byte* passwd, int passLen,
     if (blockSize > 8)
         return BAD_FUNC_ARG;
 
-    if (cost < 1 || cost >= 128 * blockSize / 8)
+    if (cost < 1 || cost >= 128 * blockSize / 8 || parallel < 1 || dkLen < 1)
         return BAD_FUNC_ARG;
 
     bSz = 128 * blockSize;
